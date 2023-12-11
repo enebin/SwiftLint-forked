@@ -11,25 +11,9 @@ struct StatementPositionRule: SwiftSyntaxCorrectableRule {
             'else' and 'catch' keywords should be at a fixed position relative to the previous block.
         """,
         kind: .style,
-        nonTriggeringExamples: [
-            Example("} else if {"),
-            Example("} else {"),
-            Example("} catch {"),
-            Example("\"}else{\""),
-            Example("struct A { let catchphrase: Int }\nlet a = A(\n catchphrase: 0\n)"),
-            Example("struct A { let `catch`: Int }\nlet a = A(\n `catch`: 0\n)")
-        ],
-        triggeringExamples: [
-            Example("↓}else if {"),
-            Example("↓}  else {"),
-            Example("↓}\ncatch {"),
-            Example("↓}\n\t  catch {")
-        ],
-        corrections: [
-            Example("↓}\n else {"): Example("} else {"),
-            Example("↓}\n   else if {"): Example("} else if {"),
-            Example("↓}\n catch {"): Example("} catch {")
-        ]
+        nonTriggeringExamples: StatementPositionRuleExamples.nonTriggeringExamples,
+        triggeringExamples: StatementPositionRuleExamples.triggeringExamples,
+        corrections: StatementPositionRuleExamples.corrections
     )
 
     func makeRewriter(file: SwiftLintFile) -> (some ViolationsSyntaxRewriter)? {
@@ -181,8 +165,7 @@ private extension IfExprSyntax {
     var elseBeforeIfKeyword: TokenSyntax? {
         if
             ifKeyword.previousToken(viewMode: .sourceAccurate)?.isElseKeyword == true,
-            let elseBeforeIfKeyword = ifKeyword.previousToken(viewMode: .sourceAccurate)
-        {
+            let elseBeforeIfKeyword = ifKeyword.previousToken(viewMode: .sourceAccurate) {
             return elseBeforeIfKeyword
         }
 
@@ -198,16 +181,16 @@ private extension IfExprSyntax {
             return nil
         }
 
-        // Check if `else` doesn't have newline in leading trivia of `else`'and
+        // Check if `else` doesn't have newline in leading trivia of `else` and
         // multiple spaces in trailing trivia of `body`'s `rightBrace`
         guard
             elseKeyword.leadingTrivia.isEmpty,
-            body.rightBrace.trailingTrivia.isSingleSpace == true
+            body.rightBrace.trailingTrivia.isSingleSpace
         else {
-            violationPosition = body.rightBrace.endPositionBeforeTrailingTrivia
+            violationPosition = body.rightBrace.positionAfterSkippingLeadingTrivia
 
             newNode.elseKeyword = elseKeyword.with(\.leadingTrivia, Trivia())
-            newNode.body.rightBrace = self.body.rightBrace.with(\.trailingTrivia, .space)
+            newNode.body.rightBrace = body.rightBrace.with(\.trailingTrivia, .space)
 
             return (violationPosition, newNode)
         }
@@ -218,7 +201,7 @@ private extension IfExprSyntax {
     func uncuddledModeViolationPosition() -> (position: AbsolutePosition, newNode: IfExprSyntax)? {
         func processViolation(elseKeyword: TokenSyntax, indentaion: Int) -> (AbsolutePosition, IfExprSyntax) {
             var newNode = self
-            let violationPosition = body.rightBrace.endPositionBeforeTrailingTrivia
+            let violationPosition = body.rightBrace.positionAfterSkippingLeadingTrivia
 
             newNode.elseKeyword = elseKeyword.with(\.leadingTrivia, .newline + .spaces(indentaion))
             newNode.body.rightBrace = self.body.rightBrace.with(\.trailingTrivia, Trivia())
@@ -262,93 +245,79 @@ private extension IfExprSyntax {
 private extension DoStmtSyntax {
     func defaultModeViolationPositions() -> (positions: [AbsolutePosition], newNode: DoStmtSyntax)? {
         var newNode = self
-        let originalCatchClauseArray = Array(catchClauses)
         var violationPositions: [AbsolutePosition] = []
         var newCatchClauses = catchClauses
 
-        originalCatchClauseArray.enumerated().forEach { index, clause in
+        if !newNode.body.rightBrace.trailingTrivia.isSingleSpace {
+            violationPositions.append(body.rightBrace.nextToken(viewMode: .sourceAccurate)!.positionAfterSkippingLeadingTrivia)
+
+            newNode.body.rightBrace = body.rightBrace.with(\.trailingTrivia, .space)
+        }
+
+        catchClauses.forEach { clause in
             guard
-                clause.previousToken(viewMode: .sourceAccurate)?.isRightBrace == true,
-                let previousRightBrace = clause.previousToken(viewMode: .sourceAccurate)
+                clause.body.rightBrace.trailingTrivia.isEmpty
             else {
+                violationPositions.append(clause.catchKeyword.position)
+                let newClause = clause.with(\.body.rightBrace.trailingTrivia, Trivia())
+
+                guard let index = catchClauses.index(of: clause) else {
+                    return
+                }
+
+                newCatchClauses = newCatchClauses.with(\.[index], newClause)
                 return
             }
-
-            let hasEmptyLeadingTrivia = clause.catchKeyword.leadingTrivia.isEmpty
-            let trailingTriviaSingleSpace = (index == 0
-                                             ? body.rightBrace
-                                             : previousRightBrace).trailingTrivia.isSingleSpace
-
-            // If either of the above conditions are not met, record the violation position and update the clause
-            if !hasEmptyLeadingTrivia || !trailingTriviaSingleSpace {
-                violationPositions.append(
-                    (index == 0 ? body.rightBrace : previousRightBrace).endPositionBeforeTrailingTrivia
-                )
-
-                var newClause = clause
-                // If it's the first catch clause, update the `do` body's right brace
-                // Otherwise, Update the previous catch clause's right brace
-                if index == 0 {
-                    newNode.body.rightBrace = body.rightBrace.with(\.trailingTrivia, .space)
-                } else {
-                    newCatchClauses = newCatchClauses
-                        .replacing(
-                            childAt: index - 1,
-                            with: originalCatchClauseArray[index - 1].with(\.body.rightBrace.trailingTrivia, .space)
-                        )
-                }
-                newClause.catchKeyword = clause.catchKeyword.with(\.leadingTrivia, Trivia())
-                newCatchClauses = newCatchClauses.replacing(childAt: index, with: newClause)
-            }
         }
-        newNode.catchClauses = newCatchClauses
 
+        newNode.catchClauses = newCatchClauses
         return violationPositions.isEmpty ? nil : (violationPositions, newNode)
     }
 
     func uncuddledModeViolationPositions() -> (positions: [AbsolutePosition], newNode: DoStmtSyntax)? {
         var newNode = self
-        let originalCatchClauseArray = Array(catchClauses)
         var violationPositions: [AbsolutePosition] = []
         var newCatchClauses = catchClauses
 
-        originalCatchClauseArray.enumerated().forEach { index, clause in
+        if
+            body.rightBrace.trailingTrivia.isNotEmpty,
+            let firstCatch = body.rightBrace.nextToken(viewMode: .sourceAccurate),
+            firstCatch.leadingTrivia == .newline
+        {
+            violationPositions.append(body.rightBrace.positionAfterSkippingLeadingTrivia)
+            newNode.body.rightBrace = newNode.body.rightBrace.with(\.trailingTrivia, Trivia())
+        }
+
+        var news = [CatchClauseSyntax]()
+        catchClauses.forEach { clause in
+            var newClause = clause
+
             guard
-                clause.previousToken(viewMode: .sourceAccurate)?.isRightBrace == true,
-                let previousRightBrace = clause.previousToken(viewMode: .sourceAccurate)
+                clause.catchKeyword.leadingTrivia == .newline
             else {
+                guard let previousRightBrace = clause.previousToken(viewMode: .sourceAccurate) else {
+                    return
+                }
+
+                violationPositions.append(previousRightBrace.positionAfterSkippingLeadingTrivia)
+                newClause = clause.with(\.catchKeyword.leadingTrivia, .newline)
+
+                if previousRightBrace.trailingTrivia.isNotEmpty {
+
+                }
+
+                guard let index = catchClauses.index(of: clause) else {
+                    return
+                }
+                newCatchClauses = newCatchClauses.with(\.[index], newClause)
+
                 return
             }
 
-            let hasNewline = clause.catchKeyword.leadingTrivia.containsNewlines()
-            let trailingTriviaEmpty = (index == 0 ? body.rightBrace : previousRightBrace).trailingTrivia.isEmpty
-            let indentationMismatch = clause.catchKeyword.indentation != doKeyword.indentation
-
-            // If any of the conditions are not met, record the violation position and update the clause
-            if !hasNewline || !trailingTriviaEmpty || indentationMismatch {
-                violationPositions.append(
-                    (index == 0 ? body.rightBrace : previousRightBrace).endPositionBeforeTrailingTrivia
-                )
-
-                var newClause = clause
-                // If it's the first catch clause, update the `do` body's right brace
-                // Otherwise, update the current clause's body right brace
-                if index == 0 {
-                    newNode.body.rightBrace = body.rightBrace.with(\.trailingTrivia, Trivia())
-                } else {
-                    newCatchClauses = newCatchClauses
-                        .replacing(
-                            childAt: index - 1,
-                            with: originalCatchClauseArray[index - 1].with(\.body.rightBrace.trailingTrivia, Trivia())
-                        )
-                }
-                newClause.catchKeyword = clause.catchKeyword
-                    .with(\.leadingTrivia, .newline + .spaces(doKeyword.indentation))
-                newCatchClauses = newCatchClauses.replacing(childAt: index, with: newClause)
-            }
+            news.append(newClause)
         }
-        newNode.catchClauses = newCatchClauses
 
+        newNode.catchClauses = newCatchClauses
         return violationPositions.isEmpty ? nil : (violationPositions, newNode)
     }
 }
