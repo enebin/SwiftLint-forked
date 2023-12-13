@@ -279,16 +279,11 @@ private extension DoStmtSyntax {
         var violationPositions: [AbsolutePosition] = []
         var newCatchClauses = catchClauses
 
-        if
-            body.rightBrace.trailingTrivia.isNotEmpty,
-            let firstCatch = body.rightBrace.nextToken(viewMode: .sourceAccurate),
-            firstCatch.leadingTrivia == .newline
-        {
+        if body.rightBrace.trailingTrivia.isNotEmpty {
             violationPositions.append(body.rightBrace.positionAfterSkippingLeadingTrivia)
             newNode.body.rightBrace = newNode.body.rightBrace.with(\.trailingTrivia, Trivia())
         }
 
-        var news = [CatchClauseSyntax]()
         catchClauses.forEach { clause in
             var newClause = clause
 
@@ -302,10 +297,6 @@ private extension DoStmtSyntax {
                 violationPositions.append(previousRightBrace.positionAfterSkippingLeadingTrivia)
                 newClause = clause.with(\.catchKeyword.leadingTrivia, .newline)
 
-                if previousRightBrace.trailingTrivia.isNotEmpty {
-
-                }
-
                 guard let index = catchClauses.index(of: clause) else {
                     return
                 }
@@ -313,8 +304,11 @@ private extension DoStmtSyntax {
 
                 return
             }
-
-            news.append(newClause)
+            
+            if body.rightBrace.trailingTrivia.isNotEmpty {
+                violationPositions.append(clause.body.rightBrace.positionAfterSkippingLeadingTrivia)
+                newNode.body.rightBrace = newNode.body.rightBrace.with(\.trailingTrivia, Trivia())
+            }
         }
 
         newNode.catchClauses = newCatchClauses
